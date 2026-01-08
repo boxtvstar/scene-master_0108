@@ -2,22 +2,9 @@
 import React, { useState, useEffect } from 'react';
 import JSZip from 'jszip';
 import { AppMode, ResultMode, AspectRatio, StoryboardCut, EditParams, Resolution } from './types';
-import { SEQUENCE_TEMPLATES, EXPRESSIONS, SHOT_SIZES, LOGO_SVG } from './constants';
-import { generateStoryboardLogic, generateImage, generateGridImage, editSingleImage } from './services/geminiService';
+import { SEQUENCE_TEMPLATES, EXPRESSIONS, LOGO_SVG } from './constants';
+import { generateStoryboardLogic, generateImage, generateGridImage, editSingleImage, testConnection } from './services/geminiService';
 import ThreeDCube from './components/ThreeDCube';
-
-// Global declaration for window.aistudio helper functions
-declare global {
-  interface AIStudio {
-    hasSelectedApiKey: () => Promise<boolean>;
-    openSelectKey: () => Promise<void>;
-  }
-
-  interface Window {
-    // Removed readonly to fix "identical modifiers" error with environmental declarations.
-    aistudio: AIStudio;
-  }
-}
 
 interface ProcessTile {
   url: string;
@@ -25,6 +12,8 @@ interface ProcessTile {
   isEnhanced?: boolean;
   customPrompt?: string;
 }
+
+const STORAGE_KEY = 'SCENE_MASTER_BYOK_KEY';
 
 const ICONS = {
   DIRECTING: (
@@ -81,15 +70,39 @@ const ICONS = {
 };
 
 const App: React.FC = () => {
-  const [hasApiKey, setHasApiKey] = useState(false);
+  const [userKey, setUserKey] = useState<string>("");
+  const [showKeyModal, setShowKeyModal] = useState<boolean>(false);
+  const [keyInput, setKeyInput] = useState<string>("");
 
   useEffect(() => {
-    const checkApiKey = async () => {
-      const selected = await window.aistudio.hasSelectedApiKey();
-      setHasApiKey(selected);
-    };
-    checkApiKey();
+    const savedKey = localStorage.getItem(STORAGE_KEY);
+    if (savedKey) {
+      setUserKey(savedKey);
+      setKeyInput(savedKey);
+    } else {
+      setShowKeyModal(true);
+    }
   }, []);
+
+  const handleSaveKey = async () => {
+    if (!keyInput.trim()) {
+      alert("API 키를 입력해주세요.");
+      return;
+    }
+    setIsLoading(true);
+    setLoadingStep("API 키 확인 중...");
+    const isValid = await testConnection(keyInput);
+    setIsLoading(false);
+    setLoadingStep("");
+
+    if (isValid) {
+      localStorage.setItem(STORAGE_KEY, keyInput);
+      setUserKey(keyInput);
+      setShowKeyModal(false);
+    } else {
+      alert("유효하지 않은 API 키입니다. 다시 확인해주세요.");
+    }
+  };
 
   const [mode, setMode] = useState<AppMode>(AppMode.CINEMA);
   const [baseImage, setBaseImage] = useState<string | null>(null);
@@ -115,7 +128,7 @@ const App: React.FC = () => {
     zoom: 0,
     denoising: 0.5,
     expression: '기본',
-    shotSize: '미디엄 샷',
+    shotSize: '', // 제거된 필드지만 타입 호환성을 위해 유지
     customPrompt: ''
   });
   const [editedImage, setEditedImage] = useState<string | null>(null);
@@ -150,15 +163,9 @@ const App: React.FC = () => {
     };
   };
 
-  const handleSelectKey = async () => {
-    await window.aistudio.openSelectKey();
-    setHasApiKey(true);
-  };
-
   const handleResolutionError = async (err: any) => {
-    if (err.message && (err.message.includes("permission") || err.message.includes("403") || err.message.includes("Requested entity was not found"))) {
-      alert("2K/4K 생성 권한이 없거나 키 설정에 문제가 있습니다. 유료 프로젝트용 API 키를 다시 선택해주세요.");
-      await window.aistudio.openSelectKey();
+    if (err.message && (err.message.includes("permission") || err.message.includes("403"))) {
+      alert("API 권한이 없거나 설정된 키에 문제가 있습니다. 유료 프로젝트용 키인지 확인해주세요.");
     } else {
       alert(`오류 발생: ${err.message}`);
     }
@@ -208,13 +215,14 @@ const App: React.FC = () => {
   };
 
   const handleGenerateGrid = async () => {
+    if (!userKey) { setShowKeyModal(true); return; }
     setIsLoading(true);
     setLoadingStep("시나리오를 구성하고 있습니다...");
     try {
       if (resultMode === ResultMode.SINGLE) {
         setLoadingStep(`단일 이미지(${selectedResolution}) 생성 중...`);
-        const prompt = `Create ONE SINGLE cinematic masterpiece frame. STRICTLY NO GRIDS, NO PANELS, NO SPLITS. Theme: ${currentTemplateObj?.name || "Original"}. ${cinemaScenario || "Professional quality, high detail"}. Ensure perfect composition and consistency with the source. Completely fill the frame.`;
-        const url = await generateImage(baseImage, prompt, aspectRatio, selectedResolution);
+        const prompt = `Create ONE SINGLE cinematic masterpiece frame. Theme: ${currentTemplateObj?.name || "Original"}. ${cinemaScenario || "Professional quality"}. Fill the frame.`;
+        const url = await generateImage(userKey, baseImage, prompt, aspectRatio, selectedResolution);
         
         const newCut: StoryboardCut = {
           id: Date.now().toString(),
@@ -226,6 +234,7 @@ const App: React.FC = () => {
         setHistory([newCut, ...history]);
       } else {
         const storyboard = await generateStoryboardLogic(
+          userKey,
           baseImage, 
           currentTemplateObj?.name || "",
           cinemaScenario
@@ -234,6 +243,7 @@ const App: React.FC = () => {
         if (resultMode === ResultMode.GRID) {
           setLoadingStep(`3x3 그리드(${selectedResolution}) 생성 중...`);
           const gridUrl = await generateGridImage(
+            userKey,
             baseImage, 
             currentTemplateObj?.name || "",
             cinemaScenario,
@@ -258,7 +268,7 @@ const App: React.FC = () => {
           for (let i = 0; i < storyboard.scenes.length; i++) {
             setLoadingStep(`장면 ${i+1}/9 생성 중...`);
             const scene = storyboard.scenes[i];
-            const url = await generateImage(baseImage, scene.prompt, aspectRatio, selectedResolution);
+            const url = await generateImage(userKey, baseImage, scene.prompt, aspectRatio, selectedResolution);
             generatedCuts.push({
               id: `${Date.now()}-${i}`,
               imageUrl: url,
@@ -279,6 +289,7 @@ const App: React.FC = () => {
   };
 
   const handleEnhanceHistoryItem = async (id: string, customInstruction?: string, res?: Resolution) => {
+    if (!userKey) { setShowKeyModal(true); return; }
     const item = history.find(h => h.id === id);
     if (!item) return;
 
@@ -286,11 +297,8 @@ const App: React.FC = () => {
     setIsLoading(true);
     setLoadingStep(`해상도 개선(${targetRes}) 중...`);
     try {
-      const prompt = customInstruction 
-        ? `Enhance image: ${customInstruction}. CRITICAL: Identify and expand the central scene to cover the entire canvas. Completely erase and overwrite any borders, grid lines, or surrounding artifacts. Ensure full-bleed output.`
-        : `Mastering: High fidelity cinematic enhancement. CRITICAL: Identify and expand the central scene to cover the entire canvas. Completely erase and overwrite any borders, grid lines, or surrounding artifacts. Ensure full-bleed output.` ;
-      
-      const result = await editSingleImage(item.imageUrl, prompt, undefined, targetRes);
+      const prompt = customInstruction || `Mastering: High fidelity cinematic enhancement.`;
+      const result = await editSingleImage(userKey, item.imageUrl, prompt, undefined, targetRes);
       setHistory(history.map(h => h.id === id ? { ...h, imageUrl: result, projectId: '이미지분할' } : h));
       if (previewImageUrl === item.imageUrl) setPreviewImageUrl(result);
     } catch (error: any) {
@@ -303,81 +311,47 @@ const App: React.FC = () => {
 
   const handleEditPreview = async () => {
     if (!baseImage) return;
+    if (!userKey) { setShowKeyModal(true); return; }
     setIsLoading(true);
     setLoadingStep(`카메라모션 연산(${selectedResolution}) 중...`);
     
-    // Improved Prompt Engine: Aggressive cinematic language for all camera parameters including Zoom
     const buildCameraMotionPrompt = (params: EditParams) => {
       let descriptivePrompt = `A professional cinematic shot re-imagined from the source. `;
+      
+      if (params.rotation > 60) descriptivePrompt += `Camera is at a sharp right profile. `;
+      else if (params.rotation > 25) descriptivePrompt += `Camera is at a 3/4 right view. `;
+      else if (params.rotation < -60) descriptivePrompt += `Camera is at a sharp left profile. `;
+      else if (params.rotation < -25) descriptivePrompt += `Camera is at a 3/4 left view. `;
 
-      // Rotation logic
-      if (params.rotation > 60) {
-        descriptivePrompt += `Camera is positioned at a sharp right profile view. `;
-      } else if (params.rotation > 25) {
-        descriptivePrompt += `Camera is positioned at a three-quarter view from the right. `;
-      } else if (params.rotation < -60) {
-        descriptivePrompt += `Camera is positioned at a sharp left profile view. `;
-      } else if (params.rotation < -25) {
-        descriptivePrompt += `Camera is positioned at a three-quarter view from the left. `;
-      } else {
-        descriptivePrompt += `A balanced frontal camera orientation. `;
-      }
+      if (params.tilt > 50) descriptivePrompt += `Extreme low-angle worm's eye view. `;
+      else if (params.tilt > 15) descriptivePrompt += `Low-angle shot. `;
+      else if (params.tilt < -60) descriptivePrompt += `Extreme top-down bird's eye view. `;
+      else if (params.tilt < -15) descriptivePrompt += `High-angle shot. `;
 
-      // Tilt logic
-      if (params.tilt > 50) {
-        descriptivePrompt += `An EXTREME low-angle shot, looking directly upwards from the ground (worm's-eye view). `;
-      } else if (params.tilt > 15) {
-        descriptivePrompt += `A dramatic low-angle shot looking up. `;
-      } else if (params.tilt < -60) {
-        descriptivePrompt += `An EXTREME Bird's-eye view, STRICTLY Top-Down (90-degree downward angle). Focus on the top of the subject. `;
-      } else if (params.tilt < -15) {
-        descriptivePrompt += `A high-angle shot looking down at the subject. `;
-      }
+      // Zoom Slider mapping to Shot Sizes
+      if (params.zoom > 70) descriptivePrompt += `Extreme close-up shot focusing on fine details. `;
+      else if (params.zoom > 25) descriptivePrompt += `Cinematic close-up shot. `;
+      else if (params.zoom > -25) descriptivePrompt += `Standard medium shot. `;
+      else if (params.zoom > -70) descriptivePrompt += `Wide cinematic shot. `;
+      else descriptivePrompt += `Extreme wide establishing shot. `;
 
-      // Zoom (Shot Size) mapping
-      if (params.zoom > 70) {
-        descriptivePrompt += `An intense extreme close-up focusing on specific facial details or objects. `;
-      } else if (params.zoom > 25) {
-        descriptivePrompt += `A tight cinematic close-up capturing deep emotional expression. `;
-      } else if (params.zoom > -25) {
-        descriptivePrompt += `A balanced medium shot showing the subject from the waist up. `;
-      } else if (params.zoom > -70) {
-        descriptivePrompt += `A wide shot placing the subject within a clear environmental context. `;
-      } else {
-        descriptivePrompt += `An extreme wide establishing shot, emphasizing the vast scale and scenery around the subject. `;
-      }
+      if (params.expression !== '기본') descriptivePrompt += `Expression: ${params.expression}. `;
+      if (params.customPrompt) descriptivePrompt += `${params.customPrompt}. `;
 
-      // Expression logic
-      if (params.expression !== '기본') {
-        descriptivePrompt += `The subject's facial expression is explicitly '${params.expression}'. `;
-      }
-
-      // Custom prompt
-      if (params.customPrompt) {
-        descriptivePrompt += `${params.customPrompt}. `;
-      }
-
-      // Mandatory Consistency & Quality
-      descriptivePrompt += `
-        STRICT RULES:
-        1. Maintain absolute character consistency (face, hair, clothing).
-        2. High-fidelity cinematic lighting and masterpiece textures.
-        3. FULL-BLEED IMAGE: Identify the core action and expand it to fill the entire frame. Erase any grid lines, borders, or surrounding panels from the source.
-      `;
-
+      descriptivePrompt += `Maintain perfect character consistency and clean full-bleed output.`;
       return descriptivePrompt;
     };
 
     try {
       const instructions = buildCameraMotionPrompt(editParams);
       const targetRatio = aspectRatio === AspectRatio.ORIGINAL ? inferredAspectRatio : (aspectRatio as string);
-      const result = await editSingleImage(baseImage, instructions, targetRatio, selectedResolution);
+      const result = await editSingleImage(userKey, baseImage, instructions, targetRatio, selectedResolution);
       
       setEditedImage(result);
       const newCut: StoryboardCut = {
         id: Date.now().toString(),
         imageUrl: result,
-        caption: `카메라모션 연출 (Rot: ${editParams.rotation}, Tilt: ${editParams.tilt}, Zoom: ${editParams.zoom})`,
+        caption: `카메라모션 (Rot: ${editParams.rotation}, Tilt: ${editParams.tilt}, Zoom: ${editParams.zoom})`,
         prompt: instructions,
         projectId: '카메라모션'
       };
@@ -414,6 +388,7 @@ const App: React.FC = () => {
   };
 
   const handleEnhanceTile = async (index: number, customInstruction?: string, res?: Resolution) => {
+    if (!userKey) { setShowKeyModal(true); return; }
     const tile = splitResults[index];
     const newTiles = [...splitResults];
     newTiles[index].isEnhancing = true;
@@ -424,18 +399,13 @@ const App: React.FC = () => {
     setLoadingStep(`이미지 개선(${targetRes}) 중...`);
 
     try {
-      const prompt = `High resolution cinematic enhancement. ${customInstruction || ""}. CRITICAL: Completely erase any grid lines or borders from the edges. Expand and fill the image to the very edges of the frame.`;
-      const result = await editSingleImage(tile.url, prompt, processAspectRatio, targetRes);
+      const prompt = `High resolution cinematic enhancement. ${customInstruction || ""}. Full bleed, no artifacts.`;
+      const result = await editSingleImage(userKey, tile.url, prompt, processAspectRatio, targetRes);
       
       const finalTiles = [...splitResults];
       finalTiles[index] = { ...finalTiles[index], url: result, isEnhancing: false, isEnhanced: true };
       setSplitResults(finalTiles);
-      
-      // Update preview if it was this tile
-      if (previewImageUrl === tile.url) {
-        setPreviewImageUrl(result);
-      }
-      
+      if (previewImageUrl === tile.url) setPreviewImageUrl(result);
       setHistory([{ id: Date.now().toString(), imageUrl: result, caption: `분할 강화 ${index + 1}`, prompt, projectId: '이미지분할' }, ...history]);
     } catch (error: any) {
       handleResolutionError(error);
@@ -485,15 +455,8 @@ const App: React.FC = () => {
 
   const renderCaption = (caption: string) => {
     if (!caption) return <span className="text-slate-500 italic">지문 정보 없음</span>;
-    
-    // Split by [Scene X] but keep the delimiters
     const parts = caption.split(/(\[Scene \d+\])/g);
-    
-    // If no scene markers found, return simple text
-    if (parts.length <= 1) {
-      return <div className="bg-slate-800/50 rounded-2xl p-6 border border-slate-700/50 text-sm leading-relaxed text-slate-300">{caption}</div>;
-    }
-
+    if (parts.length <= 1) return <div className="bg-slate-800/50 rounded-2xl p-6 border border-slate-700/50 text-sm leading-relaxed text-slate-300">{caption}</div>;
     const sceneBlocks = [];
     for (let i = 1; i < parts.length; i += 2) {
       const sceneTitle = parts[i];
@@ -545,7 +508,7 @@ const App: React.FC = () => {
           ))}
         </nav>
         <div className="flex items-center gap-4">
-          <button onClick={handleSelectKey} className={`p-2 rounded-lg border transition-all ${hasApiKey ? 'border-slate-700 text-slate-500 hover:text-amber-500' : 'border-amber-500/50 text-amber-500 animate-pulse'}`}>
+          <button onClick={() => setShowKeyModal(true)} className={`p-2 rounded-lg border transition-all ${userKey ? 'border-slate-700 text-slate-500 hover:text-amber-500' : 'border-amber-500/50 text-amber-500 animate-pulse'}`}>
             {ICONS.KEY}
           </button>
           <button onClick={handleDownloadHistoryZip} disabled={history.length === 0} className="p-2 rounded-lg border bg-slate-800 border-slate-700 text-slate-400 hover:text-white disabled:opacity-30">
@@ -705,12 +668,33 @@ const App: React.FC = () => {
         </section>
       </main>
 
-      {!hasApiKey && (
-        <div className="fixed inset-0 z-[200] bg-slate-950/90 backdrop-blur-xl flex items-center justify-center p-6">
-          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-8 space-y-6 text-center">
-            <h2 className="text-2xl font-black text-white uppercase tracking-tighter">시작하기</h2>
-            <p className="text-slate-500 text-[10px] font-bold mt-2 uppercase">2K/4K 해상도는 유료 프로젝트 키가 필수입니다.<br/><a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noreferrer" className="text-amber-500 underline">결제 문서 확인</a></p>
-            <button onClick={handleSelectKey} className="w-full py-4 bg-amber-500 text-slate-900 font-black rounded-2xl text-xs uppercase shadow-xl hover:bg-amber-400 transition-all">API 키 선택</button>
+      {showKeyModal && (
+        <div className="fixed inset-0 z-[500] bg-slate-950/90 backdrop-blur-xl flex items-center justify-center p-6">
+          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-8 space-y-6 shadow-2xl">
+            <div className="text-center">
+              <h2 className="text-2xl font-black text-white uppercase tracking-tighter mb-2">Gemini API 키 설정</h2>
+              <p className="text-slate-500 text-[10px] font-bold uppercase tracking-wider">서비스 이용을 위해 본인의 API 키를 입력해주세요.</p>
+            </div>
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-500 uppercase ml-1">API KEY</label>
+                <input 
+                  type="password" 
+                  value={keyInput} 
+                  onChange={(e) => setKeyInput(e.target.value)}
+                  placeholder="AI Studio에서 발급받은 키를 입력하세요" 
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-4 text-sm font-mono text-amber-500 outline-none focus:border-amber-500 transition-all shadow-inner"
+                />
+              </div>
+              <div className="flex flex-col gap-2">
+                <button onClick={handleSaveKey} className="w-full py-4 bg-amber-500 text-slate-900 font-black rounded-xl text-xs uppercase shadow-xl hover:bg-amber-400 transition-all">저장 및 시작</button>
+                <button onClick={() => setShowKeyModal(false)} className="w-full py-4 bg-slate-800 text-slate-400 font-black rounded-xl text-xs uppercase hover:bg-slate-700 transition-all">닫기</button>
+              </div>
+            </div>
+            <p className="text-[9px] text-slate-600 text-center leading-relaxed">
+              입력하신 키는 서버로 전송되지 않으며 오직 귀하의 브라우저 로컬 저장소에만 보관됩니다.<br/>
+              <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-amber-500/50 underline">키 발급받으러 가기</a>
+            </p>
           </div>
         </div>
       )}
@@ -745,7 +729,7 @@ const App: React.FC = () => {
                         className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs font-bold text-slate-200 outline-none focus:border-indigo-500 transition-all cursor-pointer"
                       >
                         {Object.values(Resolution).map(res => (
-                          <option key={res} value={res}>{res} {res !== Resolution.RES_1K ? '(Pro)' : ''}</option>
+                          <option key={res} value={res}>{res}</option>
                         ))}
                       </select>
                     </div>
@@ -763,7 +747,6 @@ const App: React.FC = () => {
                         <>{ICONS.ENHANCE} 테두리제거 및 화질개선</>
                       )}
                     </button>
-                    <p className="text-[9px] text-slate-500 text-center leading-tight">테두리, 워터마크, 격자선 등을 감쪽같이 제거하고<br/>이미지를 화면 가득 확장하여 재구성합니다.</p>
                   </div>
                 )}
 

@@ -3,12 +3,11 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { AspectRatio, Resolution } from "../types";
 
 /**
- * API 키 유효성을 검사하기 위한 테스트 호출
+ * 전달받은 API 키로 연결 테스트
  */
-export const testConnection = async (): Promise<boolean> => {
+export const testConnection = async (apiKey: string): Promise<boolean> => {
   try {
-    // Create instance inside function as per guidelines
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey });
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: 'hi',
@@ -21,11 +20,12 @@ export const testConnection = async (): Promise<boolean> => {
 };
 
 export const generateStoryboardLogic = async (
+  apiKey: string,
   baseImageUrl: string | null, 
   template: string, 
   customScenario?: string
 ): Promise<{ scenes: { prompt: string, caption: string }[] }> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const ai = new GoogleGenAI({ apiKey });
   const contentsParts: any[] = [];
   
   if (baseImageUrl) {
@@ -47,7 +47,6 @@ export const generateStoryboardLogic = async (
 
   contentsParts.push({ text: promptText });
 
-  // Upgraded to gemini-3-pro-preview for complex reasoning tasks
   const response = await ai.models.generateContent({
     model: 'gemini-3-pro-preview',
     contents: { parts: contentsParts },
@@ -82,12 +81,13 @@ export const generateStoryboardLogic = async (
 };
 
 export const generateImage = async (
+  apiKey: string,
   baseImageUrl: string | null, 
   prompt: string, 
   aspectRatio: AspectRatio,
   resolution?: Resolution
 ): Promise<string> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const ai = new GoogleGenAI({ apiKey });
   const useProModel = resolution === Resolution.RES_2K || resolution === Resolution.RES_4K;
   const modelName = useProModel ? 'gemini-3-pro-image-preview' : 'gemini-2.5-flash-image';
   
@@ -98,7 +98,6 @@ export const generateImage = async (
     parts.push({ inlineData: { data: base64Data, mimeType: mimeType } });
   }
   
-  // SINGLE 모드 대응을 위해 그리드 생성 금지 지시어 강화
   const strictPrompt = `${prompt} STRICT RULE: Create ONLY ONE SINGLE cinematic frame. DO NOT create grids, DO NOT split the image into multiple panels. Output a CLEAN full-frame image with NO borders, NO text, NO watermarks. Fill the entire aspect ratio.`;
   parts.push({ text: strictPrompt });
 
@@ -121,16 +120,17 @@ export const generateImage = async (
       return `data:image/png;base64,${part.inlineData.data}`;
     }
   }
-  throw new Error("이미지 생성에 실패했습니다. 유료 API 키 또는 프로젝트 설정(2K/4K)을 확인해주세요.");
+  throw new Error("이미지 생성에 실패했습니다.");
 };
 
 export const generateGridImage = async (
+  apiKey: string,
   baseImageUrl: string | null, 
   template: string, 
   customScenario?: string,
   resolution?: Resolution
 ): Promise<string> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const ai = new GoogleGenAI({ apiKey });
   const useProModel = resolution === Resolution.RES_2K || resolution === Resolution.RES_4K;
   const modelName = useProModel ? 'gemini-3-pro-image-preview' : 'gemini-2.5-flash-image';
   
@@ -167,12 +167,13 @@ export const generateGridImage = async (
 };
 
 export const editSingleImage = async (
+  apiKey: string,
   baseImageUrl: string, 
   instructions: string, 
   aspectRatio?: string,
   resolution?: Resolution
 ): Promise<string> => {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey });
     const useProModel = resolution === Resolution.RES_2K || resolution === Resolution.RES_4K;
     const modelName = useProModel ? 'gemini-3-pro-image-preview' : 'gemini-2.5-flash-image';
     const mimeType = baseImageUrl.match(/data:(.*?);/)?.[1] || 'image/jpeg';
@@ -183,7 +184,6 @@ export const editSingleImage = async (
       imageConfig.imageSize = resolution === Resolution.RES_4K ? "4K" : "2K";
     }
 
-    // Border Removal instruction enhancement: Use "identify and expand" strategy
     const enhancedInstructions = `
         ${instructions}
         STRICT EXECUTION: 
